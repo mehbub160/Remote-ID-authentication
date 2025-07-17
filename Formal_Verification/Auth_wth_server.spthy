@@ -1,0 +1,196 @@
+theory AuthServer_Protocol
+begin
+builtins: hashing, asymmetric-encryption, signing, diffie-hellman
+
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @i ==> x = y"
+
+
+
+functions: h/1, aenc/2,  adec/2, pk/1, sk/1, sign/2, verify/3, cert/3
+equations:
+  cert(PK, PS, SIG) = <PK, PS, SIG>
+
+  //Agents Key Generation Rules
+
+
+rule generate_drone_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x),Drone($A,pk(~x)), DroneKeyPair(~x,pk(~x))]->
+  [ !Ltk($A, ~x), !Pk($A, pk(~x)), Out(pk(~x))]
+
+  rule generate_CA_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x), TrustedAuthority($S, pk(~x)), CAKeyPair(~x,pk(~x))]->
+  [ !Ltk($S, ~x), !Pk($S, pk(~x)), Out(pk(~x)), !CA($S,pk(~x)) ]
+
+rule generate_obesrver_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x)]->
+  [ !Ltk($A, ~x), !Pk($A, pk(~x)), Out(pk(~x)) ]
+
+
+    rule generate_AuthServer_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x), TrustedAuthServer($S, pk(~x))]->
+  [ !Ltk($S, ~x), !Pk($S, pk(~x)), Out(pk(~x)), !AuthServer($S,pk(~x)) ]
+
+// CA certificate request and issuance rules
+
+  rule Drone_1:
+    [ !CA($S,pkS),!Ltk($A,~x) ] -->
+    [ Out(aenc(<pk(~x), sign(pk(~x),sk(pk(~x)))>, pkS)), Sent_CSR($A, $S, pk(~x), pkS)]
+
+    rule CA_1:
+        [ !Ltk($S,~x),
+        In(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)))] 
+    -->
+        [ Decrypt(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))]
+
+    rule CA_2:
+        let SIG = snd(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))
+        PKA = fst(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))
+        in
+        [!Ltk($S,~x),Decrypt(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))]
+        --[Eq(verify(SIG,PKA,PKA),true),CreateCert(PKA, pk(~x),sign(PKA,~x))]->
+        [ Out(cert(PKA, pk(~x),sign(PKA,~x))) ]
+    
+    rule Drone_2:
+        [!Ltk($A,~x), !CA($S,pkS), In(cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))), Sent_CSR($A, $S, pk(~x), pkS) ]
+        --[AcceptCert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS))))]->
+        [!Cert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS))))]
+
+
+      //Register Drone to Auth Server
+  rule Drone_3:
+  [!Cert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))),!Ltk($A,~x), !AuthServer($T, pkT)] -->
+  [Out(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pkT)), !RegisterDrone($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS))))]
+
+  rule AuthServer_1:
+  [!Ltk($T,~x), !CA($S,pkS), In(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pk(~x)))] -->
+  [Decrypt(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pk(~x)))]
+
+  rule AuthServer_2:
+  let CERT = snd(adec(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pk(~x)), ~x))
+  ID = fst(adec(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pk(~x)), ~x))
+        in
+  [!Ltk($T,~x), Decrypt(aenc(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>,pk(~x))),!CA($S,pkS)] --[RegCert(ID,CERT)]->
+  [!DroneInAuthServer(ID,CERT)]
+
+  //Drone sends its RID to the observer
+    rule Drone_4:
+  [!RegisterDrone($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))),!Ltk($A,~x)] --[SendRID($A, 'RID', sign('RID',~x))]->
+  [Out(<$A, 'RID', sign('RID',~x)>)]
+
+
+
+  //Register Observer to Service
+rule Observer_1:
+[Fr(~pwd), !Ltk($A, ~x), !AuthServer($T,pkT)] -->
+
+[Out(aenc(<<'Register'>,<$A, h(~pwd)>>,pkT)),!UserInAuthService($A,~pwd,$T)]
+
+rule AuthServer_3:
+[!Ltk($T, ~x), In(aenc(<<'Register'>,<$A, pwd>>,pk(~x)))] -->
+[Decrypt(aenc(<<'Register'>,<$A, pwd>>,pk(~x)))]
+
+rule AuthServer_4:
+let CRED = snd(adec(aenc(<<'Register'>,<$A, pwd>>,pk(~x)),~x))
+ID = fst(CRED)
+PWD = snd(CRED)
+in
+[!Ltk($T, ~x),Decrypt(aenc(<<'Register'>,<$A, pwd>>,pk(~x)))] --> 
+[!ObserverInAuthServer(ID,PWD)]
+
+
+//Login Observer
+rule Observer_3:
+[!UserInAuthService($A,~pwd,$T), !Ltk($A, ~x), !AuthServer($T,pkT)] -->
+[Out(aenc(<<'Login',$A>,<h(~pwd),pk(~x)>>,pkT))]
+
+rule AuthServer_5:
+[!Ltk($T, ~x), In(aenc(<<'Login',$A>, <PWD,pkA>>,pk(~x)))] -->
+[Decrypt(aenc(<<'Login',$A>, <PWD,pkA>>,pk(~x)))]
+
+
+rule AuthServer_6:
+let DEC = adec(aenc(<<'Login',ID>, <PWD,pkA>>,pk(~x)),~x)
+CRED = <ID, PWD>
+TOKEN = sign(CRED, ~x)
+PKA = snd(snd(DEC))
+in
+[!Ltk($T, ~x),Decrypt(aenc(<<'Login',$A>, <PWD,pkA>>,pk(~x))),!ObserverInAuthServer(ID,PWD)] --[IssueToken(TOKEN, $T)]-> 
+[Out(aenc(<'TOKEN',TOKEN>,PKA))]
+
+rule Observer_4:
+[!Ltk($A, ~x), In(aenc(<'TOKEN',TOKEN>,pk(~x))),!UserInAuthService($A,~pwd,$T),!AuthServer($T,pkT)] --[Eq(verify(TOKEN,<$A, h(~pwd)>,pkT),true)]-> [Token($T, TOKEN)]
+
+
+//Recieves RID
+rule Observer_5:
+[In(<$D, 'RID', SIG>), !Ltk($A, ~x), Token($T, TOKEN), !AuthServer($T,pkT), !UserInAuthService($A,~pwd,$T)] --[UseToken(TOKEN)]->
+[Out(aenc(<<$D, 'RID', SIG>, <TOKEN, pk(~x)>>, pkT)), WaitForRIDResponse($D, 'RID', SIG)]
+
+rule AuthServer_7:
+[!Ltk($T, ~x), In(aenc(<<$D, 'RID', SIG>, <sign(<ID, PWD>,~x),pkA>>, pk(~x))),!ObserverInAuthServer(ID,PWD)] --[]->
+[Decrypt(aenc(<<$D, 'RID', SIG>, <sign(<ID, PWD>,~x), pkA>>, pk(~x)))]
+
+rule AuthServer_8:
+let DEC = adec(aenc(<<$D, 'RID', SIG>, <sign(<ID, PWD>,~x),pkA>>, pk(~x)), ~x)
+RID = fst(DEC)
+PKA = snd(snd(DEC))
+in
+[!Ltk($T, ~x),Decrypt(aenc(<<$D, 'RID', SIG>, <sign(<ID, PWD>,~x), pkA>>, pk(~x))), !ObserverInAuthServer(ID,PWD), !DroneInAuthServer($D, CERT)] --[Eq(verify(SIG,'RID',fst(CERT)),true), RIDVerified($D,'RID',CERT,SIG)]->
+[Out(aenc(<<$D, 'RID', SIG>, <'VALID'>>,PKA))]
+
+rule Observer_6:
+[!Ltk($A, ~x), In(aenc(<<$D, 'RID', SIG>, <'VALID'>>,pk(~x))), WaitForRIDResponse($D, 'RID', SIG)] --[RIDAccepted($D, 'RID', SIG)]-> []
+
+
+
+
+
+
+
+
+
+//Lemmas
+  lemma Protocol_Liveness:
+  exists-trace 
+  "Ex A SIGRID #i. RIDAccepted(A,'RID',SIGRID) @ i"
+
+
+    lemma Secrecy:
+  "All x #i.
+    Secret(x) @i ==> not (Ex #j. K(x)@j)"
+
+    lemma Cert_From_CA_Only:
+    "All A PK PS SIG #i. AcceptCert(A,<PK, PS,SIG>)  @ i
+     ==>  (Ex S #j. TrustedAuthority(S, PS) @ j)"
+
+lemma JWT_Authenticity:
+  "All TOKEN #i. 
+     UseToken(TOKEN) @ i
+     ==>
+     (Ex #j1 #j2 T sK CRED.
+      TOKEN = sign(CRED, sK)
+      & IssueToken(TOKEN, T) @ j1
+      & TrustedAuthServer(T,pk(sK)) @j2
+     )"
+
+
+lemma RID_Integrity:
+  "All A PK PS SIG SIGRID #i.
+     RIDVerified(A, 'RID', <PK, PS, SIG>, SIGRID) @ i
+     ==>
+     (Ex x meta.
+        SIGRID = sign('RID', x) &
+        PK = <pk(x),meta>)"
+
+lemma Injective_Agreement:
+    "All A PK PS SIG SIGRID #i. RIDVerified(A,'RID',<PK, PS,SIG>,SIGRID)  @ i ==>
+    (Ex #j1 #j2.  Drone(A, PK) @j1 & SendRID(A,'RID',SIGRID) @ j2)"
+
+
+  end

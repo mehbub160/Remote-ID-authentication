@@ -1,0 +1,117 @@
+theory Serverless_Protocol
+begin
+builtins: hashing, asymmetric-encryption, signing, diffie-hellman
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @i ==> x = y"
+
+functions: h/1, aenc/2,  adec/2, pk/1, sk/1, sign/2, verify/3, cert/3
+equations:
+  cert(PK, PS, SIG) = <PK, PS, SIG>
+
+
+  //Agents Key Generation Rules
+rule generate_drone_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x),Drone($A,pk(~x)), DroneKeyPair(~x,pk(~x))]->
+  [ !Ltk($A, ~x), !Pk($A, pk(~x)), Out(pk(~x))]
+
+  rule generate_CA_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x), TrustedAuthority($S, pk(~x)), CAKeyPair(~x,pk(~x))]->
+  [ !Ltk($S, ~x), !Pk($S, pk(~x)), Out(pk(~x)), !CA($S,pk(~x)) ]
+
+rule generate_obesrver_keypair:
+    [ Fr(~x) ]
+  --[Secret(~x)]->
+  [ !Ltk($A, ~x), !Pk($A, pk(~x)), Out(pk(~x)) ]
+
+
+// CA certificate request and issuance rules
+  rule Drone_1:
+    [ !CA($S,pkS),!Ltk($A,~x) ] -->
+    [ Out(aenc(<pk(~x), sign(pk(~x),sk(pk(~x)))>, pkS)), Sent_CSR($A, $S, pk(~x), pkS)]
+
+    rule CA_1:
+        [ !Ltk($S,~x),
+        In(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)))] 
+    -->
+        [ Decrypt(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))]
+
+    rule CA_2:
+        let SIG = snd(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))
+        PKA = fst(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))
+        in
+        [!Ltk($S,~x),Decrypt(adec(aenc(<pkA, sign(pkA,sk(pkA))>, pk(~x)), ~x))]
+        --[Eq(verify(SIG,PKA,PKA),true),CreateCert(PKA, pk(~x),sign(PKA,~x))]->
+        [ Out(cert(PKA, pk(~x),sign(PKA,~x))) ]
+    
+    rule Drone_2:
+        [!Ltk($A,~x), !CA($S,pkS), In(cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))), Sent_CSR($A, $S, pk(~x), pkS) ]
+        --[AcceptCert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS))))]->
+        [!Cert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS))))]
+
+
+
+  // Drone sends its certificate to the observer
+        rule Drone_3:
+  [!Cert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))),!Ltk($A,~x)] -->
+  [Out(<$A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))>)]
+
+  rule Observer_1:
+
+  [!CA($S,pkS), In(<$A, cert(pkA, pkS,sign(pkA,sk(pkS)))>)] --[AcceptCert($A, cert(pkA, pkS,sign(pkA,sk(pkS))))]->
+  [GetCert($A, cert(pkA, pkS,sign(pkA,sk(pkS))))]
+
+
+  //Drone sends its RID to the observer
+  rule Drone_4:
+  [!Cert($A, cert(pk(~x), pkS,sign(pk(~x),sk(pkS)))),!Ltk($A,~x)] --[SendRID($A, 'RID', sign('RID',~x))]->
+  [Out(<$A, 'RID', sign('RID',~x)>)]
+
+  rule Observer_2:
+  [In(<$A, 'RID', SIG>) ] -->
+  [GetRID($A, 'RID',SIG)]
+
+  // Observer verifies the RID using the certificate
+  rule Observer_3:
+  let CERT = cert(pkA, pkS,sign(pkA,sk(pkS)))
+  PKA = fst(fst(CERT))
+  in
+  [GetCert($A, cert(pkA, pkS,sign(pkA,sk(pkS)))), GetRID($A, 'RID', SIG) ] --[Eq(verify(SIG,'RID',PKA),true)]->[VerifedRID($A, 'RID',CERT,SIG)]
+  
+  rule Observer_4:
+[VerifedRID($A, 'RID',CERT,SIG)]--[RIDAccepted($A, 'RID',CERT,SIG)]->[]
+
+
+
+
+
+//Lemmas
+
+  lemma Protocol_Liveness:
+  exists-trace 
+  "Ex A CERT SIGRID #i. RIDAccepted(A,'RID',CERT,SIGRID) @ i"
+
+  lemma Secrecy:
+  "All x #i.
+    Secret(x) @i ==> not (Ex #j. K(x)@j)"
+
+
+lemma Cert_From_CA_Only:
+    "All A PK PS SIG #i. AcceptCert(A,<PK, PS,SIG>)  @ i
+     ==>  (Ex S #j. TrustedAuthority(S, PS) @ j)"
+
+lemma RID_Integrity:
+  "All A PK PS SIG SIGRID #i.
+     RIDAccepted(A, 'RID', <PK, PS, SIG>, SIGRID) @ i
+     ==>
+     (Ex x meta.
+        SIGRID = sign('RID', x) &
+        PK = <pk(x),meta>)"
+
+lemma Injective_Agreement:
+    "All A PK PS SIG SIGRID #i. RIDAccepted(A,'RID',<PK, PS,SIG>,SIGRID)  @ i ==>
+    (Ex #j1 #j2.  Drone(A, PK) @j1 & SendRID(A,'RID',SIGRID) @ j2)"
+
+  end
